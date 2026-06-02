@@ -1,6 +1,6 @@
 # workflow-runner
 
-Workflow template E2E exerciser for [nexus-agents](https://github.com/williamzujkowski/nexus-agents). Chains `list_workflows`, `run_graph_workflow`, and `query_trace`.
+Workflow template E2E exerciser for [nexus-agents](https://github.com/nexus-substrate/nexus-agents). Chains `list_workflows`, `run_graph_workflow`, and `query_trace`.
 
 ## Quick start
 
