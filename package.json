@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/williamzujkowski/workflow-runner.git"
+    "url": "https://github.com/nexus-substrate/workflow-runner.git"
   },
   "keywords": ["workflow", "graph", "mcp", "nexus-agents", "e2e-test"],
   "engines": { "node": ">=22" },
