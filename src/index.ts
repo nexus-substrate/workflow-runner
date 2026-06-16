@@ -14,6 +14,7 @@ export {
   toErrorResult,
   countResults,
   runWorkflowPipeline,
+  ToolCallTimeoutError,
 } from './runner-pipeline.js';
 export { generateReport } from './reporter.js';
 export type { ReportFormat } from './reporter.js';
@@ -30,10 +31,6 @@ export type {
   WorkflowRunResult,
   RunnerReport,
   RunnerConfig,
-  RunWorkflowInput,
-  RunWorkflowResponse,
-  RunWorkflowDryRun,
-  StepResultSummary,
 } from './types.js';
 export {
   ListWorkflowsInputSchema,
@@ -43,7 +40,4 @@ export {
   GraphWorkflowListSchema,
   QueryTraceInputSchema,
   QueryTraceResponseSchema,
-  RunWorkflowInputSchema,
-  RunWorkflowResponseSchema,
-  RunWorkflowDryRunSchema,
 } from './types.js';

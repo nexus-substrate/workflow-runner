@@ -19,12 +19,6 @@ pnpm build       # Compile to dist/
 | `run_graph_workflow` | Execute graph-based workflows |
 | `query_trace` | Query execution traces |
 
-## Live integration mode
-
-```bash
-NEXUS_LIVE=true npx tsx src/run-live.ts
-```
-
 ## License
 
 MIT

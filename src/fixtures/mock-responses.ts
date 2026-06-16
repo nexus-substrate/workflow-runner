@@ -7,8 +7,6 @@ import type {
   RunGraphResponse,
   GraphWorkflowInfo,
   QueryTraceResponse,
-  RunWorkflowResponse,
-  RunWorkflowDryRun,
 } from '../types.js';
 
 // ============================================================================
@@ -204,53 +202,4 @@ export const MOCK_TRACE_NOT_FOUND: QueryTraceResponse = {
   totalEvents: 0,
   truncated: false,
   source: 'not_found',
-};
-
-// ============================================================================
-// run_workflow
-// ============================================================================
-
-export const MOCK_RUN_WORKFLOW_SUCCESS: RunWorkflowResponse = {
-  executionId: 'exec-2026-04-17-0001',
-  workflowName: 'code-review',
-  status: 'completed',
-  stepResults: [
-    { stepId: 'analyze', status: 'success', durationMs: 1250 },
-    { stepId: 'report', status: 'success', durationMs: 340 },
-  ],
-  output: { summary: 'Review completed: 3 findings.' },
-  durationMs: 1600,
-};
-
-export const MOCK_RUN_WORKFLOW_FAILED: RunWorkflowResponse = {
-  executionId: 'exec-2026-04-17-0002',
-  workflowName: 'bug-fix',
-  status: 'failed',
-  stepResults: [
-    { stepId: 'reproduce', status: 'success', durationMs: 100 },
-    { stepId: 'patch', status: 'failed', durationMs: 50, error: 'Adapter unavailable' },
-    { stepId: 'verify', status: 'skipped', durationMs: 0 },
-  ],
-  output: null,
-  durationMs: 155,
-};
-
-export const MOCK_RUN_WORKFLOW_DRY_RUN: RunWorkflowDryRun = {
-  valid: true,
-  workflowName: 'documentation-update',
-  stepCount: 4,
-  inputsProvided: ['file', 'section'],
-  inputsRequired: ['file', 'section'],
-  inputsMissing: [],
-  validationErrors: [],
-};
-
-export const MOCK_RUN_WORKFLOW_DRY_RUN_INVALID: RunWorkflowDryRun = {
-  valid: false,
-  workflowName: 'documentation-update',
-  stepCount: 4,
-  inputsProvided: ['file'],
-  inputsRequired: ['file', 'section'],
-  inputsMissing: ['section'],
-  validationErrors: ["Missing required input 'section'"],
 };
