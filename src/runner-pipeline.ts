@@ -30,6 +30,58 @@ export interface ToolCaller {
 }
 
 // ============================================================================
+// Timeout enforcement
+// ============================================================================
+
+/** Error thrown when an MCP call exceeds the configured per-call timeout. */
+export class ToolCallTimeoutError extends Error {
+  constructor(
+    readonly toolName: string,
+    readonly timeoutMs: number
+  ) {
+    super(`Tool call '${toolName}' timed out after ${timeoutMs}ms`);
+    this.name = 'ToolCallTimeoutError';
+  }
+}
+
+/**
+ * Invoke a tool call, racing it against a timeout. If `timeoutMs` is undefined
+ * or <= 0 the call is awaited without a deadline. On timeout the caller is
+ * signalled via an AbortController (best-effort — callers that ignore the
+ * signal still lose the race) and a ToolCallTimeoutError is thrown.
+ */
+async function callWithTimeout(
+  caller: ToolCaller,
+  toolName: string,
+  args: Record<string, unknown>,
+  timeoutMs: number | undefined
+): Promise<unknown> {
+  if (timeoutMs === undefined || timeoutMs <= 0) {
+    return caller.call(toolName, args);
+  }
+
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      // Reject with the timeout error first so it wins the race, then signal
+      // the caller to abort its in-flight work (best-effort cleanup).
+      reject(new ToolCallTimeoutError(toolName, timeoutMs));
+      controller.abort();
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([
+      caller.call(toolName, { ...args, signal: controller.signal }),
+      timeout,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+// ============================================================================
 // Default graph workflow inputs
 // ============================================================================
 
@@ -49,17 +101,29 @@ const DEFAULT_GRAPH_INPUTS: Readonly<Record<string, Record<string, unknown>>> = 
 
 /** Step 1: List all workflow templates. */
 export async function listTemplates(
-  caller: ToolCaller
+  caller: ToolCaller,
+  timeoutMs?: number
 ): Promise<ListWorkflowsResponse> {
-  const raw = await caller.call('list_workflows', { format: 'names' });
+  const raw = await callWithTimeout(
+    caller,
+    'list_workflows',
+    { format: 'names' },
+    timeoutMs
+  );
   return ListWorkflowsResponseSchema.parse(raw);
 }
 
 /** Step 2: List all graph workflows. */
 export async function listGraphWorkflows(
-  caller: ToolCaller
+  caller: ToolCaller,
+  timeoutMs?: number
 ): Promise<readonly GraphWorkflowInfo[]> {
-  const raw = await caller.call('run_graph_workflow', { workflow: 'list' });
+  const raw = await callWithTimeout(
+    caller,
+    'run_graph_workflow',
+    { workflow: 'list' },
+    timeoutMs
+  );
   return GraphWorkflowListSchema.parse(raw);
 }
 
@@ -67,22 +131,34 @@ export async function listGraphWorkflows(
 export async function executeGraph(
   caller: ToolCaller,
   name: string,
-  inputs: Record<string, unknown>
+  inputs: Record<string, unknown>,
+  timeoutMs?: number
 ): Promise<RunGraphResponse> {
-  const raw = await caller.call('run_graph_workflow', {
-    workflow: name,
-    inputs,
-    enableCheckpointing: true,
-  });
+  const raw = await callWithTimeout(
+    caller,
+    'run_graph_workflow',
+    {
+      workflow: name,
+      inputs,
+      enableCheckpointing: true,
+    },
+    timeoutMs
+  );
   return RunGraphResponseSchema.parse(raw);
 }
 
 /** Step 4: Query traces for a run. */
 export async function queryTrace(
   caller: ToolCaller,
-  runId: string
+  runId: string,
+  timeoutMs?: number
 ): Promise<QueryTraceResponse> {
-  const raw = await caller.call('query_trace', { runId });
+  const raw = await callWithTimeout(
+    caller,
+    'query_trace',
+    { runId },
+    timeoutMs
+  );
   return QueryTraceResponseSchema.parse(raw);
 }
 
@@ -143,11 +219,13 @@ export async function runWorkflowPipeline(
   caller: ToolCaller,
   config: RunnerConfig = {}
 ): Promise<RunnerReport> {
+  const { timeoutMs } = config;
+
   // Step 1: Discover templates
-  const templates = await listTemplates(caller);
+  const templates = await listTemplates(caller, timeoutMs);
 
   // Step 2: Discover and execute graph workflows
-  const graphInfos = await listGraphWorkflows(caller);
+  const graphInfos = await listGraphWorkflows(caller, timeoutMs);
   const graphResults: WorkflowRunResult[] = [];
 
   if (config.runGraphWorkflows !== false) {
@@ -156,21 +234,31 @@ export async function runWorkflowPipeline(
       const inputs =
         userInputs[info.name] ?? DEFAULT_GRAPH_INPUTS[info.name] ?? {};
       try {
-        const response = await executeGraph(caller, info.name, inputs);
+        const response = await executeGraph(caller, info.name, inputs, timeoutMs);
         graphResults.push(toRunResult(info, response));
-      } catch {
-        graphResults.push(toErrorResult(info.name, 'Execution failed'));
+      } catch (e) {
+        // Preserve the real failure (transport error, Zod schema mismatch,
+        // timeout) — collapsing every cause to "Execution failed" discards the
+        // single most useful diagnostic signal this exerciser produces.
+        graphResults.push(toErrorResult(info.name, errorMessage(e)));
       }
     }
   }
 
   // Step 3: Query traces (if configured)
   let traceResult: QueryTraceResponse | null = null;
+  let traceError: string | undefined;
   if (config.traceRunId !== undefined) {
     try {
-      traceResult = await queryTrace(caller, config.traceRunId);
-    } catch {
+      traceResult = await queryTrace(caller, config.traceRunId, timeoutMs);
+    } catch (e) {
+      // A failed trace query is distinct from "trace never requested"; carry
+      // the error so the report can tell them apart, and surface it on stderr.
+      traceError = errorMessage(e);
       traceResult = null;
+      console.error(
+        `query_trace failed for runId '${config.traceRunId}': ${traceError}`
+      );
     }
   }
 
@@ -183,5 +271,11 @@ export async function runWorkflowPipeline(
     passed,
     failed,
     traceResult,
+    ...(traceError !== undefined ? { traceError } : {}),
   };
+}
+
+/** Normalize an unknown thrown value to a message string. */
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

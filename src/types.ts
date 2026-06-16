@@ -108,50 +108,6 @@ export const QueryTraceResponseSchema = z.object({
 export type QueryTraceResponse = z.infer<typeof QueryTraceResponseSchema>;
 
 // ============================================================================
-// run_workflow
-// ============================================================================
-
-export const RunWorkflowInputSchema = z.object({
-  template: z.string().min(1),
-  inputs: z.record(z.string().max(100), z.unknown()),
-  dryRun: z.boolean().optional(),
-});
-
-export type RunWorkflowInput = z.infer<typeof RunWorkflowInputSchema>;
-
-const StepResultSummarySchema = z.object({
-  stepId: z.string(),
-  status: z.enum(['success', 'failed', 'skipped']),
-  durationMs: z.number(),
-  error: z.string().optional(),
-});
-
-export type StepResultSummary = z.infer<typeof StepResultSummarySchema>;
-
-export const RunWorkflowResponseSchema = z.object({
-  executionId: z.string(),
-  workflowName: z.string(),
-  status: z.enum(['completed', 'failed']),
-  stepResults: z.array(StepResultSummarySchema),
-  output: z.unknown(),
-  durationMs: z.number(),
-});
-
-export type RunWorkflowResponse = z.infer<typeof RunWorkflowResponseSchema>;
-
-export const RunWorkflowDryRunSchema = z.object({
-  valid: z.boolean(),
-  workflowName: z.string(),
-  stepCount: z.number(),
-  inputsProvided: z.array(z.string()),
-  inputsRequired: z.array(z.string()),
-  inputsMissing: z.array(z.string()),
-  validationErrors: z.array(z.string()),
-});
-
-export type RunWorkflowDryRun = z.infer<typeof RunWorkflowDryRunSchema>;
-
-// ============================================================================
 // Runner types
 // ============================================================================
 
@@ -176,6 +132,13 @@ export interface RunnerReport {
   readonly passed: number;
   readonly failed: number;
   readonly traceResult: QueryTraceResponse | null;
+  /**
+   * Error message if a trace was requested (`config.traceRunId` set) but the
+   * `query_trace` call failed. Distinguishes "trace errored" from "trace not
+   * requested" (both leave `traceResult` null). Undefined when no trace was
+   * requested or the trace succeeded.
+   */
+  readonly traceError?: string;
 }
 
 /** Runner configuration. */
@@ -183,4 +146,11 @@ export interface RunnerConfig {
   readonly runGraphWorkflows?: boolean;
   readonly traceRunId?: string;
   readonly graphInputs?: Readonly<Record<string, Record<string, unknown>>>;
+  /**
+   * Per-call timeout in milliseconds applied to every MCP tool call. When a
+   * call exceeds this budget it is aborted and surfaced as an error result for
+   * that step, so a hung server cannot hang the whole run. Omit or set <= 0 to
+   * disable the timeout.
+   */
+  readonly timeoutMs?: number;
 }

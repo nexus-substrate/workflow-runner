@@ -13,6 +13,7 @@ import {
   toErrorResult,
   countResults,
   runWorkflowPipeline,
+  ToolCallTimeoutError,
 } from './runner-pipeline.js';
 import type { RunnerConfig, WorkflowRunResult } from './types.js';
 import {
@@ -346,5 +347,159 @@ describe('runWorkflowPipeline', () => {
     expect(result.graphResults.length).toBe(1);
     expect(result.graphResults[0]!.status).toBe('error');
     expect(result.failed).toBe(1);
+  });
+
+  // --- #15: preserve the real failure cause instead of "Execution failed" ---
+
+  it('preserves the real error message on a failed graph execution', async () => {
+    let graphIdx = 0;
+    const caller: ToolCaller = {
+      call: vi.fn(async (toolName: string) => {
+        if (toolName === 'list_workflows') return MOCK_LIST_WORKFLOWS;
+        if (toolName === 'run_graph_workflow') {
+          if (graphIdx++ === 0) return MOCK_GRAPH_LIST.slice(0, 1);
+          throw new Error('ECONNREFUSED 127.0.0.1:9000');
+        }
+        throw new Error(`Unexpected: ${toolName}`);
+      }),
+    };
+
+    const result = await runWorkflowPipeline(caller);
+
+    expect(result.graphResults[0]!.error).toBe('ECONNREFUSED 127.0.0.1:9000');
+    expect(result.graphResults[0]!.error).not.toBe('Execution failed');
+  });
+
+  it('preserves a Zod schema-mismatch error from a bad server response', async () => {
+    let graphIdx = 0;
+    const caller: ToolCaller = {
+      call: vi.fn(async (toolName: string) => {
+        if (toolName === 'list_workflows') return MOCK_LIST_WORKFLOWS;
+        if (toolName === 'run_graph_workflow') {
+          if (graphIdx++ === 0) return MOCK_GRAPH_LIST.slice(0, 1);
+          // Unexpected shape — executeGraph's Zod parse should reject this.
+          return { workflow: 'echo', status: 'unknown-status' };
+        }
+        throw new Error(`Unexpected: ${toolName}`);
+      }),
+    };
+
+    const result = await runWorkflowPipeline(caller);
+
+    expect(result.graphResults[0]!.status).toBe('error');
+    // The Zod failure carries actionable detail, not a generic string.
+    expect(result.graphResults[0]!.error).not.toBe('Execution failed');
+    expect(result.graphResults[0]!.error!.length).toBeGreaterThan(0);
+  });
+
+  it('distinguishes a failed trace query from "trace not requested"', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      let graphIdx = 0;
+      const caller: ToolCaller = {
+        call: vi.fn(async (toolName: string) => {
+          if (toolName === 'list_workflows') return MOCK_LIST_WORKFLOWS;
+          if (toolName === 'run_graph_workflow') {
+            return graphIdx++ === 0 ? MOCK_GRAPH_LIST.slice(0, 1) : MOCK_ECHO_RESULT;
+          }
+          if (toolName === 'query_trace') throw new Error('trace store offline');
+          throw new Error(`Unexpected: ${toolName}`);
+        }),
+      };
+
+      const result = await runWorkflowPipeline(caller, { traceRunId: 'wf-run-001' });
+
+      expect(result.traceResult).toBeNull();
+      expect(result.traceError).toBe('trace store offline');
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('leaves traceError undefined when no trace is requested', async () => {
+    let graphIdx = 0;
+    const caller: ToolCaller = {
+      call: vi.fn(async (toolName: string) => {
+        if (toolName === 'list_workflows') return MOCK_LIST_WORKFLOWS;
+        if (toolName === 'run_graph_workflow') {
+          return graphIdx++ === 0 ? MOCK_GRAPH_LIST.slice(0, 1) : MOCK_ECHO_RESULT;
+        }
+        throw new Error(`Unexpected: ${toolName}`);
+      }),
+    };
+
+    const result = await runWorkflowPipeline(caller);
+
+    expect(result.traceResult).toBeNull();
+    expect(result.traceError).toBeUndefined();
+  });
+});
+
+// ============================================================================
+// #16: per-call timeout / abort
+// ============================================================================
+
+describe('timeout enforcement', () => {
+  it('aborts a hung graph execution and reports it without hanging', async () => {
+    let graphIdx = 0;
+    const caller: ToolCaller = {
+      call: vi.fn((toolName: string, args: Record<string, unknown>) => {
+        if (toolName === 'list_workflows') return Promise.resolve(MOCK_LIST_WORKFLOWS);
+        if (toolName === 'run_graph_workflow') {
+          if (graphIdx++ === 0) return Promise.resolve(MOCK_GRAPH_LIST.slice(0, 1));
+          // Simulate a hung server: never resolves on its own, but honors abort.
+          return new Promise((_, reject) => {
+            const signal = args['signal'] as AbortSignal | undefined;
+            signal?.addEventListener('abort', () =>
+              reject(new Error('aborted by signal'))
+            );
+          });
+        }
+        return Promise.reject(new Error(`Unexpected: ${toolName}`));
+      }),
+    };
+
+    const result = await runWorkflowPipeline(caller, { timeoutMs: 20 });
+
+    expect(result.graphResults.length).toBe(1);
+    expect(result.graphResults[0]!.status).toBe('error');
+    expect(result.graphResults[0]!.error).toMatch(/timed out after 20ms/);
+    expect(result.failed).toBe(1);
+  });
+
+  it('passes an AbortSignal through to the caller', async () => {
+    const caller: ToolCaller = {
+      call: vi.fn(async () => MOCK_LIST_WORKFLOWS),
+    };
+
+    await listTemplates(caller, 1000);
+
+    const callMock = caller.call as ReturnType<typeof vi.fn>;
+    const passedArgs = callMock.mock.calls[0]![1] as Record<string, unknown>;
+    expect(passedArgs['signal']).toBeInstanceOf(AbortSignal);
+  });
+
+  it('does not attach a signal or deadline when timeoutMs is omitted', async () => {
+    const caller: ToolCaller = {
+      call: vi.fn(async () => MOCK_LIST_WORKFLOWS),
+    };
+
+    await listTemplates(caller);
+
+    const callMock = caller.call as ReturnType<typeof vi.fn>;
+    const passedArgs = callMock.mock.calls[0]![1] as Record<string, unknown>;
+    expect(passedArgs['signal']).toBeUndefined();
+  });
+
+  it('throws ToolCallTimeoutError from a step when the call exceeds the budget', async () => {
+    const caller: ToolCaller = {
+      call: vi.fn(
+        () => new Promise(() => {}) // never resolves
+      ),
+    };
+
+    await expect(listTemplates(caller, 15)).rejects.toBeInstanceOf(
+      ToolCallTimeoutError
+    );
   });
 });
